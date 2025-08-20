@@ -12,145 +12,145 @@ library(xgboost)
 
 
 
-# 2024 Ranking Model Projection -------------------------------------------
+# 2025 Ranking Model Projection -------------------------------------------
 
 ## Uses regular season data
 ## Add in postseason later
-pbp = read_csv("coding-projects/nfl-fast-r/pbp-df-thru23")[, -1]
+pbp = read_csv("coding-projects/nfl-fast-r/adj-pbp-df-thru24")[, -1]
 
 
 ## Updating with Weekly data
 
 
-pbp_raw = load_pbp(1999:2024)
-
-### CHANGE
-current_week = 13
-
-
-off_wk = pbp_raw |>
-  filter(!is.na(yards_gained), (pass == 1 | rush == 1), week <= current_week) |>
-  mutate(season = substr(game_id, 1, 4)) |>
-  group_by(season, posteam) |>
-  summarise(mean_epa_wk = mean(epa, na.rm = TRUE),
-            success_rate_wk = mean(success, na.rm = TRUE),
-            ypa_wk = mean(yards_gained, na.rm = TRUE),
-            pass_epa_wk = mean(epa[pass == 1], na.rm = TRUE),
-            pass_sr_wk = mean(success[pass == 1], na.rm = TRUE),
-            rush_epa_wk = mean(epa[rush == 1], na.rm = TRUE),
-            rush_sr_wk = mean(success[rush == 1], na.rm = TRUE),
-            ed_epa_wk = mean(epa[down == 1 | down == 2], na.rm = TRUE),
-            ed_sr_wk = mean(success[down == 1 | down == 2], na.rm = TRUE),
-            ld_epa_wk = mean(epa[down == 3 | down == 4], na.rm = TRUE),
-            ld_sr_wk = mean(success[down == 3 | down == 4], na.rm = TRUE),
-            ypa_wk = mean(yards_gained),
-            exp_play_wk = sum((pass == 1 & yards_gained >= 20) | (rush == 1 & yards_gained >= 10)) / n(),
-            # Drive Killers
-            to_rate_wk = sum(interception == 1 | fumble_forced == 1 | sack == 1) / n(),
-            # proe_wk = mean(pass_oe, na.rm = TRUE),
-            
-            plays = n(),
-            .groups = "drop") |>
-  rename(team = posteam) |>
-  arrange(-mean_epa_wk) |>
-  select(-plays)
-
-def_wk = pbp_raw |>
-  filter(!is.na(yards_gained), (pass == 1 | rush == 1), week <= current_week) |>
-  mutate(season = substr(game_id, 1, 4)) |>
-  group_by(season, defteam) |>
-  summarise(mean_epa_allowed_wk = mean(epa, na.rm = TRUE),
-            success_rate_allowed_wk = mean(success, na.rm = TRUE),
-            ypa_allowed_wk = mean(yards_gained, na.rm = TRUE),
-            pass_epa_allowed_wk = mean(epa[pass == 1], na.rm = TRUE),
-            pass_sr_allowed_wk = mean(success[pass == 1], na.rm = TRUE),
-            rush_epa_allowed_wk = mean(epa[rush == 1], na.rm = TRUE),
-            rush_sr_allowed_wk = mean(success[rush == 1], na.rm = TRUE),
-            ed_epa_allowed_wk = mean(epa[down == 1 | down == 2], na.rm = TRUE),
-            ed_sr_allowed_wk = mean(success[down == 1 | down == 2], na.rm = TRUE),
-            ld_epa_allowed_wk = mean(epa[down == 3 | down == 4], na.rm = TRUE),
-            ld_sr_allowed_wk = mean(success[down == 3 | down == 4], na.rm = TRUE),
-            ypa_allowed_wk = mean(yards_gained),
-            exp_play_allowed_wk = sum((pass == 1 & yards_gained >= 20) | (rush == 1 & yards_gained >= 10)) / n(),
-            # DKs
-            to_forced_rate_wk = sum(interception == 1 | fumble_forced == 1 | sack == 1) / n(),
-            # proe_forced_wk = mean(pass_oe, na.rm = TRUE),
-            
-            plays = n(),
-            .groups = "drop") |>
-  rename(team = defteam) |>
-  arrange(mean_epa_allowed_wk) |>
-  select(-plays)
-
-# Change Name to wk_df
-wk_df = off_wk |>
-  left_join(def_wk, by = c("season", "team")) |>
-  mutate(season = as.double(season)) |>
-  group_by(team) |>
-  arrange(season) |>
-  mutate(lead(across(mean_epa_wk: to_forced_rate_wk))) |>
-  ungroup() |>
-  filter(!is.na(team)) |> 
-  arrange(season, team)
-
-
-## SOS-adjustment
-games = load_schedules()
-
-
-
-avg_def_epa_wk = wk_df |> filter(season != 2024) |> group_by(season) |> 
-  summarise(mean_epa_allowed_season_wk = mean(mean_epa_allowed_wk))
-avg_off_epa_wk = wk_df |> filter(season != 2024) |> group_by(season) |> 
-  summarise(mean_epa_season_wk = mean(mean_epa_wk))
-
-
-off_epa_wk = wk_df |> filter(season != 2024) |> 
-  select(season, team, mean_epa_wk) |> arrange(season, team)
-def_epa_wk = wk_df |> filter(season != 2024) |> 
-  select(season, team, mean_epa_allowed_wk) |> arrange(season, team)
-
-seasons_raw_wk = wk_df |> filter(season != 2024) |> 
-  select(season) |> pull()
-teams_raw_wk = wk_df |> filter(season != 2024) |> select(team) |> pull()
-
-
-off_adj_raw_wk = numeric(797)
-
-for (i in 1:797) { 
-  off_adj_raw_wk[i] = games |> 
-    mutate(season = season - 1) |> 
-    filter(season == seasons_raw_wk[i], !is.na(result), week <= current_week) |> 
-    select(season, home_team, away_team) |> 
-    mutate(home_team = clean_team_abbrs(home_team),
-           away_team = clean_team_abbrs(away_team)) |> 
-    filter(home_team == teams_raw_wk[i] | away_team == teams_raw_wk[i]) |> 
-    mutate(opp_team = if_else(home_team == teams_raw_wk[i], away_team, home_team)) |> 
-    left_join(def_epa_wk, by = c("opp_team" = "team", "season")) |> 
-    # Fix issue with 0'2 HOU
-    summarise(mean(mean_epa_allowed_wk, na.rm = TRUE))
-}
-
-# off_adj_raw_wk |> as_vector()
-
-
-
-
-def_adj_raw_wk = numeric(797)
-
-for (i in 1:797) { 
-  def_adj_raw_wk[i] = games |> 
-    mutate(season = season - 1) |> 
-    filter(season == seasons_raw_wk[i], !is.na(result), week <= current_week) |> 
-    select(season, home_team, away_team) |> 
-    mutate(home_team = clean_team_abbrs(home_team),
-           away_team = clean_team_abbrs(away_team)) |> 
-    filter(home_team == teams_raw_wk[i] | away_team == teams_raw_wk[i]) |> 
-    mutate(opp_team = if_else(home_team == teams_raw_wk[i], away_team, home_team)) |> 
-    left_join(off_epa_wk, by = c("opp_team" = "team", "season")) |> 
-    # Fix issue with 0'2 HOU
-    summarise(mean(mean_epa_wk, na.rm = TRUE))
-}
+# pbp_raw = load_pbp(1999:2024)
+# 
+# ### CHANGE
+# current_week = 21
+# 
+# 
+# off_wk = pbp_raw |>
+#   filter(!is.na(yards_gained), (pass == 1 | rush == 1), week <= current_week) |>
+#   mutate(season = substr(game_id, 1, 4)) |>
+#   group_by(season, posteam) |>
+#   summarise(mean_epa_wk = mean(epa, na.rm = TRUE),
+#             success_rate_wk = mean(success, na.rm = TRUE),
+#             ypa_wk = mean(yards_gained, na.rm = TRUE),
+#             pass_epa_wk = mean(epa[pass == 1], na.rm = TRUE),
+#             pass_sr_wk = mean(success[pass == 1], na.rm = TRUE),
+#             rush_epa_wk = mean(epa[rush == 1], na.rm = TRUE),
+#             rush_sr_wk = mean(success[rush == 1], na.rm = TRUE),
+#             ed_epa_wk = mean(epa[down == 1 | down == 2], na.rm = TRUE),
+#             ed_sr_wk = mean(success[down == 1 | down == 2], na.rm = TRUE),
+#             ld_epa_wk = mean(epa[down == 3 | down == 4], na.rm = TRUE),
+#             ld_sr_wk = mean(success[down == 3 | down == 4], na.rm = TRUE),
+#             ypa_wk = mean(yards_gained),
+#             exp_play_wk = sum((pass == 1 & yards_gained >= 20) | (rush == 1 & yards_gained >= 10)) / n(),
+#             # Drive Killers
+#             to_rate_wk = sum(interception == 1 | fumble_forced == 1 | sack == 1) / n(),
+#             # proe_wk = mean(pass_oe, na.rm = TRUE),
+#             
+#             plays = n(),
+#             .groups = "drop") |>
+#   rename(team = posteam) |>
+#   arrange(-mean_epa_wk) |>
+#   select(-plays)
+# 
+# def_wk = pbp_raw |>
+#   filter(!is.na(yards_gained), (pass == 1 | rush == 1), week <= current_week) |>
+#   mutate(season = substr(game_id, 1, 4)) |>
+#   group_by(season, defteam) |>
+#   summarise(mean_epa_allowed_wk = mean(epa, na.rm = TRUE),
+#             success_rate_allowed_wk = mean(success, na.rm = TRUE),
+#             ypa_allowed_wk = mean(yards_gained, na.rm = TRUE),
+#             pass_epa_allowed_wk = mean(epa[pass == 1], na.rm = TRUE),
+#             pass_sr_allowed_wk = mean(success[pass == 1], na.rm = TRUE),
+#             rush_epa_allowed_wk = mean(epa[rush == 1], na.rm = TRUE),
+#             rush_sr_allowed_wk = mean(success[rush == 1], na.rm = TRUE),
+#             ed_epa_allowed_wk = mean(epa[down == 1 | down == 2], na.rm = TRUE),
+#             ed_sr_allowed_wk = mean(success[down == 1 | down == 2], na.rm = TRUE),
+#             ld_epa_allowed_wk = mean(epa[down == 3 | down == 4], na.rm = TRUE),
+#             ld_sr_allowed_wk = mean(success[down == 3 | down == 4], na.rm = TRUE),
+#             ypa_allowed_wk = mean(yards_gained),
+#             exp_play_allowed_wk = sum((pass == 1 & yards_gained >= 20) | (rush == 1 & yards_gained >= 10)) / n(),
+#             # DKs
+#             to_forced_rate_wk = sum(interception == 1 | fumble_forced == 1 | sack == 1) / n(),
+#             # proe_forced_wk = mean(pass_oe, na.rm = TRUE),
+#             
+#             plays = n(),
+#             .groups = "drop") |>
+#   rename(team = defteam) |>
+#   arrange(mean_epa_allowed_wk) |>
+#   select(-plays)
+# 
+# # Change Name to wk_df
+# wk_df = off_wk |>
+#   left_join(def_wk, by = c("season", "team")) |>
+#   mutate(season = as.double(season)) |>
+#   group_by(team) |>
+#   arrange(season) |>
+#   mutate(lead(across(mean_epa_wk: to_forced_rate_wk))) |>
+#   ungroup() |>
+#   filter(!is.na(team)) |> 
+#   arrange(season, team)
+# 
+# 
+# ## SOS-adjustment
+# games = load_schedules()
+# 
+# 
+# 
+# avg_def_epa_wk = wk_df |> filter(season != 2024) |> group_by(season) |> 
+#   summarise(mean_epa_allowed_season_wk = mean(mean_epa_allowed_wk))
+# avg_off_epa_wk = wk_df |> filter(season != 2024) |> group_by(season) |> 
+#   summarise(mean_epa_season_wk = mean(mean_epa_wk))
+# 
+# 
+# off_epa_wk = wk_df |> filter(season != 2024) |> 
+#   select(season, team, mean_epa_wk) |> arrange(season, team)
+# def_epa_wk = wk_df |> filter(season != 2024) |> 
+#   select(season, team, mean_epa_allowed_wk) |> arrange(season, team)
+# 
+# seasons_raw_wk = wk_df |> filter(season != 2024) |> 
+#   select(season) |> pull()
+# teams_raw_wk = wk_df |> filter(season != 2024) |> select(team) |> pull()
+# 
+# 
+# off_adj_raw_wk = numeric(797)
+# 
+# for (i in 1:797) { 
+#   off_adj_raw_wk[i] = games |> 
+#     mutate(season = season - 1) |> 
+#     filter(season == seasons_raw_wk[i], !is.na(result), week <= current_week) |> 
+#     select(season, home_team, away_team) |> 
+#     mutate(home_team = clean_team_abbrs(home_team),
+#            away_team = clean_team_abbrs(away_team)) |> 
+#     filter(home_team == teams_raw_wk[i] | away_team == teams_raw_wk[i]) |> 
+#     mutate(opp_team = if_else(home_team == teams_raw_wk[i], away_team, home_team)) |> 
+#     left_join(def_epa_wk, by = c("opp_team" = "team", "season")) |> 
+#     # Fix issue with 0'2 HOU
+#     summarise(mean(mean_epa_allowed_wk, na.rm = TRUE))
+# }
+# 
+# # off_adj_raw_wk |> as_vector()
+# 
+# 
+# 
+# 
+# def_adj_raw_wk = numeric(797)
+# 
+# for (i in 1:797) { 
+#   def_adj_raw_wk[i] = games |> 
+#     mutate(season = season - 1) |> 
+#     filter(season == seasons_raw_wk[i], !is.na(result), week <= current_week) |> 
+#     select(season, home_team, away_team) |> 
+#     mutate(home_team = clean_team_abbrs(home_team),
+#            away_team = clean_team_abbrs(away_team)) |> 
+#     filter(home_team == teams_raw_wk[i] | away_team == teams_raw_wk[i]) |> 
+#     mutate(opp_team = if_else(home_team == teams_raw_wk[i], away_team, home_team)) |> 
+#     left_join(off_epa_wk, by = c("opp_team" = "team", "season")) |> 
+#     # Fix issue with 0'2 HOU
+#     summarise(mean(mean_epa_wk, na.rm = TRUE))
+# }
 
 
 # def_adj_raw_wk |> as_vector()
@@ -247,7 +247,7 @@ for (i in 1:797) {
 
 ## Draft Imput
 
-draft_df = read_csv("coding-projects/nfl-fast-r/draft_value_99")[, -1]
+draft_df = read_csv("coding-projects/nfl-fast-r/draft_value_99.csv")[, -1]
 
 
 ## FA Input
@@ -256,7 +256,6 @@ fa_df = read_csv("coding-projects/nfl-fast-r/offeseason-player-value-changes.csv
 
 
 ## Injury Input
-### Update!!!
 injury_df = read_csv("coding-projects/nfl-fast-r/injury-value-lost.csv")[, -1]
 
 
@@ -272,26 +271,12 @@ to_df = read_csv("coding-projects/nfl-fast-r/turnover-value.csv")[, -1]
 # Full Dataset
 full_df = pbp |>
   # SOS
-  ## Season
-  mutate(off_sos = off_adj_raw |> as_vector() |> as.double(),
-         def_sos = def_adj_raw |> as_vector()) |> 
-  left_join(avg_off_epa, by = "season") |> 
-  left_join(avg_def_epa, by = "season") |> 
   ## Weekly
-  mutate(off_sos_wk = off_adj_raw_wk |> as_vector() |> as.double(),
-         def_sos_wk = def_adj_raw_wk |> as_vector()) |> 
-  left_join(avg_off_epa_wk, by = "season") |> 
-  left_join(avg_def_epa_wk, by = "season") |> 
+  # mutate(off_sos_wk = off_adj_raw_wk |> as_vector() |> as.double(),
+  #        def_sos_wk = def_adj_raw_wk |> as_vector()) |> 
+  # left_join(avg_off_epa_wk, by = "season") |> 
+  # left_join(avg_def_epa_wk, by = "season") |> 
   
-  
-  mutate(adj_mean_epa = mean_epa - (off_sos - mean_epa_allowed_season),
-         adj_mean_epa_allowed = mean_epa_allowed - (def_sos - mean_epa_season)) |> 
-  group_by(season) |> 
-  mutate(almost = .6*scale(adj_mean_epa) - .4*scale(adj_mean_epa_allowed)) |>
-  #Maybe leave as z-score in future
-  mutate(ranking = scale(almost) *
-           (20 / (max(scale(almost)) - min(scale(almost))))) |>
-  ungroup() |> 
   group_by(team) |> 
   arrange(season) |> 
   mutate(next_ranking = case_when(
@@ -304,12 +289,12 @@ full_df = pbp |>
                 -c(mean_epa_allowed_pct:plays_def_pct)) |> 
   
   ## Adding in weekly data
-  left_join(wk_df, by = c("season", "team")) |>
+  # left_join(wk_df, by = c("season", "team")) |>
   # filter(!is.na(ypa_allowed_wk), !is.na(off_sos_wk)) |>
-  mutate(adj_mean_epa_wk = mean_epa_wk - (off_sos_wk - mean_epa_allowed_season_wk),
-         adj_mean_epa_allowed_wk = mean_epa_allowed_wk - (def_sos_wk - mean_epa_season_wk)) |>
-  mutate(raw_ranking_wk = .6*scale(mean_epa_wk) - .4*scale(mean_epa_allowed_wk)) |>
-  mutate(ranking_wk = .6*scale(adj_mean_epa_wk) - .4*scale(adj_mean_epa_allowed_wk)) |>
+  # mutate(adj_mean_epa_wk = mean_epa_wk - (off_sos_wk - mean_epa_allowed_season_wk),
+  #        adj_mean_epa_allowed_wk = mean_epa_allowed_wk - (def_sos_wk - mean_epa_season_wk)) |>
+  # mutate(raw_ranking_wk = .6*scale(mean_epa_wk) - .4*scale(mean_epa_allowed_wk)) |>
+  # mutate(ranking_wk = .6*scale(adj_mean_epa_wk) - .4*scale(adj_mean_epa_allowed_wk)) |>
   
   
   ## DRAFT
@@ -330,7 +315,6 @@ full_df = pbp |>
            if_else(is.na(tot_injured_value_lost), 0, tot_injured_value_lost)) |>
   
   arrange(season, team)
-
 
 
 
@@ -417,44 +401,56 @@ test_data = full_df2[-train_ind, ]
 
 
 
-pca_result = prcomp(train_data |> select(-next_ranking), scale. = TRUE)
-
-
-plot(pca_result)
-
-
-pca_data = data.frame(
-  PC1 = pca_result$x[,1],
-  PC2 = pca_result$x[,2], 
-  Ranking = train_data |> select(next_ranking) |> pull())
-
-# Plot the data on the first two principal components, colored by the digit label
-ggplot(pca_data, aes(x = PC1, y = PC2, color = Ranking > 5)) +
-  geom_point() +
-  labs(
-    # title = "PCA of MNIST Data (Digits 1 and 2)",
-    x = "First Principal Component",
-    y = "Second Principal Component",
-    color = "Ranking"
-  ) +
-  theme_minimal()
-## Not good enough explanation
-
-
-# KMeans
-
-kmeans_result = kmeans(train_data |> select(-next_ranking), centers = 5)
-
-kmeans_result$withinss
+# pca_result = prcomp(train_data |> select(-next_ranking), scale. = TRUE)
+# 
+# 
+# plot(pca_result)
+# 
+# 
+# pca_data = data.frame(
+#   PC1 = pca_result$x[,1],
+#   PC2 = pca_result$x[,2], 
+#   Ranking = train_data |> select(next_ranking) |> pull())
+# 
+# # Plot the data on the first two principal components, colored by the digit label
+# ggplot(pca_data, aes(x = PC1, y = PC2, color = Ranking > 5)) +
+#   geom_point() +
+#   labs(
+#     # title = "PCA of MNIST Data (Digits 1 and 2)",
+#     x = "First Principal Component",
+#     y = "Second Principal Component",
+#     color = "Ranking"
+#   ) +
+#   theme_minimal()
+# ## Not good enough explanation
+# 
+# 
+# # KMeans
+# 
+# kmeans_result = kmeans(train_data |> select(-next_ranking), centers = 5)
+# 
+# kmeans_result$withinss
 
 
 # Average
 
 (avg_rmse = sqrt(mean(((train_data |> select(next_ranking) |> pull() |> mean()) - (test_data |> select(next_ranking) |> pull()))^2)))
-## Off by 4.75 using average
+## Off by 4.97 using average
 
 
-# Linear Regression
+# # Linear Regression
+# 
+# ## Current ranking only
+# 
+# m0 = lm(next_ranking ~ ranking_wk, data = train_data)
+# summary(m0)
+# 
+# 
+# pred = predict(m0, newdata = test_data)
+# 
+# (m0_rmse = sqrt(mean((pred - test_data |> select(next_ranking) |> pull())^2)))
+# ## 1.57
+
 
 
 ## Model 1
@@ -464,13 +460,13 @@ m1a = lm(next_ranking ~ 1, data = train_data)
 m1 = lm(next_ranking ~ ., data = train_data)
 summary(m1)
 ### CHANGE!!!
-m1_r2 = 0.83
+m1_r2 = 0.26
 
 
 pred = predict(m1, newdata = test_data)
 
 (m1_rmse = sqrt(mean((pred - test_data |> select(next_ranking) |> pull())^2)))
-# Off by 2.18
+# Off by 4.52
 
 
 
@@ -478,14 +474,14 @@ pred = predict(m1, newdata = test_data)
 m2 = step(m1a, direction = "both", scope = formula(m1), trace = 0)
 summary(m2)
 ###CHANGE!!!
-m2_r2 = 0.84
+m2_r2 = 0.27
 
 pred = predict(m2, newdata = test_data)
 (m2_rmse = sqrt(mean((pred - test_data |> select(next_ranking) |> pull())^2)))
-# Off by 2.04
+# Off by 4.52
 
 sqrt(vif(m2))
-# Nope
+# Ok
 
 par(mfrow = c(2, 2))
 plot(m2)
@@ -496,78 +492,79 @@ sort(cooks.distance(m2), decreasing = TRUE)[1:10]
 
 ## Constant Variance
 bptest(m2)
-### With the p-value = 0.02 < .05 = $\alpha$, we reject the null and conclude the constant variance assumption is satisfied.
+### With the p-value = 0.77 > .05 = $\alpha$, we fail to reject the null and conclude the constant variance assumption is satisfied.
 
 ## Normaility, n < 50
 shapiro.test(m2$residuals)
-### With the p-value = 0.73 > .05 = $\alpha$, we fail to reject the null and conclude the constant variance assumption is satisfied.
+### With the p-value = 0.16 > .05 = $\alpha$, we reject the null and conclude the constant variance assumption is satisfied.
 
 ### CHANGE!!!
-m2_diagnostics = "No"
+m2_diagnostics = "Yes"
 
 
 
 
-m3a = lm(next_ranking ~ 1
-         , data = train_data |> select(ranking, next_ranking, ends_with("wk")))
-
-# Model 3
-m3b = lm(next_ranking ~ .
-        , data = train_data |> select(ranking, next_ranking, ends_with("wk")))
-summary(m3b)
-## r^2 = 0.83
-
-m3 = step(m3a, direction = "both", scope = formula(m3b))
-summary(m3)
-### CHANGE!!!
-m3_r2 = 0.83
-
-
-
-pred = predict(m3, newdata = test_data)
-(m3_rmse = sqrt(mean((pred - test_data |> select(next_ranking) |> pull())^2)))
-# Off by 1.96
-
-par(mfrow = c(2, 2))
-plot(m3)
-
-sqrt(vif(m3))
-## OK...
-
-## HIPs
-sort(cooks.distance(m3), decreasing = TRUE)[1:10]
-### All good, since less than 1.
-
-## Constant Variance
-bptest(m3)
-### With the p-value = 0.35 > .05 = $\alpha$, we fail to reject the null and conclude the constant variance assumption is satisfied.
-
-## Normaility, n < 50
-shapiro.test(m3$residuals)
-### With the p-value = 0.001 < .05 = $\alpha$, we reject the null and conclude the constant variance assumption is satisfied.
-
-### CHANGE!!!
-m3_diagnostics = "No"
+# m3a = lm(next_ranking ~ 1
+#          , data = train_data |> select(ranking, next_ranking, ends_with("wk")))
+# 
+# # Model 3
+# m3b = lm(next_ranking ~ .
+#         , data = train_data |> select(ranking, next_ranking, ends_with("wk")))
+# summary(m3b)
+# ## r^2 = 0.93
+# 
+# m3 = step(m3a, direction = "both", scope = formula(m3b))
+# summary(m3)
+# ### CHANGE!!!
+# m3_r2 = 0.94
+# 
+# 
+# 
+# pred = predict(m3, newdata = test_data)
+# (m3_rmse = sqrt(mean((pred - test_data |> select(next_ranking) |> pull())^2)))
+# # Off by 1.33
+# 
+# par(mfrow = c(2, 2))
+# plot(m3)
+# 
+# sqrt(vif(m3))
+# ## Fine
+# 
+# ## HIPs
+# sort(cooks.distance(m3), decreasing = TRUE)[1:10]
+# ### All good, since less than 1.
+# 
+# ## Constant Variance
+# bptest(m3)
+# ### With the p-value = 0.08 > .05 = $\alpha$, we fail reject the null and conclude the constant variance assumption is satisfied.
+# 
+# 
+# 
+# ## Normaility, n > 50
+# ks.test(m3$residuals, "pnorm", mean = mean(m3$residuals), sd = sd(m3$residuals))
+# ### With the p-value = 0.13 > .05 = $\alpha$, we reject the null and conclude the constant variance assumption is satisfied.
+# 
+# ### CHANGE!!!
+# m3_diagnostics = "Yes"
 
 
 
 
 # Model 4
-m4 = lm(next_ranking ~ ranking + tot_injured_value_lost +
-          net_to_epa_tot + draft_value_added + net_value
-        , data = train_data)
+m4 = lm(next_ranking ~ ranking + tot_injured_value_lost + net_to_epa_tot + net_value
+        + draft_value_added, data = train_data)
 summary(m4)
-# r^2 = 0.24
+# r^2 = 0.23
 
 
 # Model 5
 m5 = step(m4, trace = 0)
 summary(m5)
-m5_r2 = 0.24
+m5_r2 = 0.23
 
 pred = predict(m5, newdata = test_data)
 (m5_rmse = sqrt(mean((pred - test_data |> select(next_ranking) |> pull())^2)))
-## RMSE = 4.07
+## RMSE = 4.51
 
 
 par(mfrow = c(2, 2))
@@ -609,7 +606,7 @@ coefficients
 pred = predict(lasso_model, newx = x_test, s = cv_lasso$lambda.min)
 
 (lasso_rmse = sqrt(mean((pred - y_test)^2)))
-# Off by 1.95
+# Off by 4.45
 
 
 # RIDGE
@@ -629,7 +626,7 @@ final_model$beta[, 1] |> abs() |> sort(decreasing = TRUE)
 pred = predict(final_model, newx = x_test)
 
 (ridge_rmse = sqrt(mean((pred - y_test)^2)))
-# Off by 2.03
+# Off by 4.46
 
 
 
@@ -653,7 +650,7 @@ for (i in 1:100) {
 }
 
 (knn_rmse = min(error))
-# 2.44
+# 4.51
 
 which.min(error)
 
@@ -695,7 +692,7 @@ best_tuning
 best_rf_model = tuned_models[[best_index]]
 best_rf_model
 ###CHANGE!!!
-rf_r2 = 0.83
+rf_r2 = 0.23
 
 
 # Calculate the variable importance for the best model
@@ -718,7 +715,7 @@ sort(abs(variable_importance$importance), decreasing = TRUE)
 pred_rf = predict(best_rf_model, newdata = as.data.frame(test_data))
 
 (rf_rmse = sqrt(mean((pred_rf$predicted - as.vector(y_test))^2)))
-# 2.07
+# 4.48
 
 
 
@@ -805,7 +802,10 @@ for (i in 1:nrow(tuning_grid2)) {
 (results = data.frame(best_eta, best_max_depth, best_ntrees, best_error))
 
 (xgb_rmse = results[which.min(best_error), 4])
-# Off by 2.03
+# Off by 4.48
+
+
+
 
 # set.seed(123)
 # 
@@ -838,56 +838,53 @@ for (i in 1:nrow(tuning_grid2)) {
 
 
 
-all_models = tibble(model = c("Average", "Full Linear Regression", 
+all_models = tibble(model = c("Average", "Raw Ranking", "Full Linear Regression", 
                               "Reduced Linear Regression", "Rankings + 24' Stats", 
                               "Rankings + Key Traits", "Lasso", "Ridge", "KNN", 
                               "Random Forest", "XGBoost"),
-                    rmse = c(avg_rmse, m1_rmse, m2_rmse, m3_rmse, m5_rmse, 
+                    rmse = c(avg_rmse, NA, m1_rmse, m2_rmse, NA, m5_rmse, 
                              lasso_rmse, ridge_rmse, knn_rmse, rf_rmse, xgb_rmse),
-                    r_2= c(NA, m1_r2, m2_r2, m3_r2, m5_r2, NA, NA, NA, rf_r2, NA),
+                    r_2= c(NA, NA, m1_r2, m2_r2, NA, m5_r2, NA, NA, NA, rf_r2, NA),
                     ### CHANGE!!!
-                    diagnostics = c(NA, "No", m2_diagnostics, m3_diagnostics, 
+                    diagnostics = c(NA, NA, "No", m2_diagnostics, NA, 
                                     "Yes*", "Yes", "Yes", "Yes", "Yes", "Yes")) |> 
   arrange(rmse)
 
 all_models
 
 
-# 2024 Predictions --------------------------------------------------------
+# 2025 Predictions --------------------------------------------------------
 
-
-teams_23 = full_df |> filter(season == 2023)
-
+teams_24 = full_df |> filter(season == 2024)
 
 # Selected model
 ### CHANGE
-pred_24 = predict(lasso_model, 
-                  newx = as.matrix(teams_23 |> select(-season, -team, - next_ranking)), 
+
+
+pred_25 = predict(lasso_model,
+                  newx = as.matrix(teams_24 |> select(-c(season, team, next_ranking))), 
                   s = cv_lasso$lambda.min)
 
 
-(pred_24_vec = as.vector(pred_24))
-
-
-teams_24 = teams_23 |>
-  mutate(next_ranking = pred_24_vec) |> 
-  select(season, team, next_ranking, everything()) |> 
+teams_25 = teams_24 |>
+  mutate(next_ranking = pred_25) |>
+  select(season, team, next_ranking, everything()) |>
   arrange(-next_ranking)
 
-teams_24 |>
+teams_25 |>
   select(team, next_ranking) |>
   mutate(next_ranking = round(next_ranking, 1)) |>
   print(n = 32)
 
-# write.csv(teams_24, file = "team-strength-projections-24.csv")
+# write.csv(teams_25, file = "team-strength-projections-25.csv")
 
-coefficients
 
-ggplot(teams_24, aes(y = reorder(team, next_ranking), x = next_ranking)) +
+
+ggplot(teams_25, aes(y = reorder(team, next_ranking), x = next_ranking)) +
   labs(
     ### CHANGE!!! (2)
-    title = 'Week 14 NFL Team Strength Projections',
-    subtitle = "team strength defined by 60-40 split of off and def adjusted efficiency  |  lasso model based on 24' & 23' efficiency",
+    title = '2025 NFL Team Strength Projections',
+    subtitle = "team strength defined by 60-40 split of off and def adjusted efficiency  |  lasso regression based on 24' play & offseason changes",
     caption = 'By: Sam Burch  |  Data @nflfastR',
     x = "Projected Spread against an Average Team"
   ) +
@@ -908,37 +905,38 @@ ggplot(teams_24, aes(y = reorder(team, next_ranking), x = next_ranking)) +
   nflplotR::scale_color_nfl(type = "secondary") +
   nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .03, alpha = .8)
 
-# ggsave("nfl-power-rankings-24.png", width = 16, height = 12, units = "cm")
+# ggsave("nfl-power-rankings-25.png", width = 16, height = 12, units = "cm")
 
 
 
 
-ggplot(teams_24, aes(y = reorder(team, raw_ranking_wk), x = raw_ranking_wk)) +
-  labs(
-    ### CHANGE!!! (2)
-    title = 'Raw NFL Team Strength Rankings',
-    subtitle = "thru wk13  |  team strength defined by 60-40 split of off and def adjusted efficiency",
-    caption = 'By: Sam Burch  |  Data @nflfastR',
-    x = "Projected Spread against an Average Team"
-  ) +
-  theme(
-    plot.subtitle = element_text(size = 6, hjust = .5),
-    plot.title = element_text(hjust = 0.5),
-    panel.grid.major.y = element_blank(),  # Remove horizontal major grid lines
-    panel.grid.minor.y = element_blank(),  # Remove horizontal minor grid lines
-    panel.grid.major.x = element_line(color = "lightgray", size = 0.5, linetype = 2),  # Customize vertical major grid lines
-    panel.grid.minor.x = element_blank(),
-    panel.background = element_blank(),
-    axis.title.y = element_blank(),
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank()) +
-  scale_x_continuous(breaks = seq(-2, 2, .25)) +
-  geom_col(aes(color = team, fill = team), alpha = .8, width = 1) +
-  nflplotR::scale_fill_nfl(type = "primary") +
-  nflplotR::scale_color_nfl(type = "secondary") +
-  nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .03, alpha = .8)
+# ggplot(teams_24, aes(y = reorder(team, raw_ranking_wk), x = raw_ranking_wk)) +
+#   labs(
+#     ### CHANGE!!! (2)
+#     title = 'Raw NFL Team Strength Rankings',
+#     subtitle = "thru wk15  |  team strength defined by 60-40 split of off and def adjusted efficiency",
+#     caption = 'By: Sam Burch  |  Data @nflfastR',
+#     x = "Z-Score"
+#   ) +
+#   theme(
+#     plot.subtitle = element_text(size = 6, hjust = .5),
+#     plot.title = element_text(hjust = 0.5),
+#     panel.grid.major.y = element_blank(),  # Remove horizontal major grid lines
+#     panel.grid.minor.y = element_blank(),  # Remove horizontal minor grid lines
+#     panel.grid.major.x = element_line(color = "lightgray", size = 0.5, linetype = 2),  # Customize vertical major grid lines
+#     panel.grid.minor.x = element_blank(),
+#     panel.background = element_blank(),
+#     axis.title.y = element_blank(),
+#     axis.text.y = element_blank(),
+#     axis.ticks.y = element_blank()) +
+#   scale_x_continuous(breaks = seq(-2, 2, .5)) +
+#   geom_col(aes(color = team, fill = team), alpha = .8, width = 1) +
+#   nflplotR::scale_fill_nfl(type = "primary") +
+#   nflplotR::scale_color_nfl(type = "secondary") +
+#   nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .03, alpha = .8)
 
 
+# ggsave("nfl-raw-power-rankings-24.png", width = 16, height = 12, units = "cm")
 
 
 
@@ -949,12 +947,12 @@ ggplot(teams_24, aes(y = reorder(team, raw_ranking_wk), x = raw_ranking_wk)) +
 
 
 
-ggplot(teams_24, aes(x = off_sos_wk, y = def_sos_wk)) +
+ggplot(teams_24, aes(x = off_sos, y = def_sos)) +
   labs(x = "Offensive SOS",
        y = "Defensive SOS",
-       title = "NFL Strength of Schedule",
+       title = "NFL Strength of Schedule (2024)",
        ### CHANGE!!!
-       subtitle = "thru wk13  |  strength of schedule = average opponents' 24' efficiency  |  top right = hard  |  bottom left = easy",
+       subtitle = "regualr + postseason  |  strength of schedule = average opponents' 24' efficiency  |  top right = hard  |  bottom left = easy",
        caption = "By: Sam Burch  |  Data @nflfastR") +
   theme(
     plot.title = element_text(hjust = 0.5),
@@ -964,21 +962,22 @@ ggplot(teams_24, aes(x = off_sos_wk, y = def_sos_wk)) +
     panel.background = element_blank()
   ) +
   scale_x_reverse() +
+  # nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .07, alpha = .8, data = teams_24 |> filter(team %in% teams_left)) +
   nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .07, alpha = .8) +
   stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se=FALSE, color='gray') +
-  nflplotR::geom_mean_lines(aes(x0 = off_sos_wk, y0 = def_sos_wk))
+  nflplotR::geom_mean_lines(aes(x0 = off_sos, y0 = def_sos))
 
 # ggsave("team-sos.png", width = 16, height = 9, units = "cm")
 
 
 # Offensive Performance
 
-ggplot(teams_24, aes(x = adj_mean_epa_wk, y = success_rate_wk)) +
+ggplot(teams_24, aes(x = adj_mean_epa, y = success_rate)) +
   labs(x = 'EPA / Play',
        y = 'Success Rate',
-       title = "NFL Offensive Performances",
+       title = "NFL Offensive Performances (2024)",
        ### CHANGE!!!
-       subtitle = "thru wk13  |  efficiency adjusted for SOS",
+       subtitle = "regualr + postseason  |  efficiency adjusted for SOS",
        caption = 'By: Sam Burch  |  Data @nflfastR') +
   theme(
     plot.title = element_text(hjust = 0.5),
@@ -987,9 +986,10 @@ ggplot(teams_24, aes(x = adj_mean_epa_wk, y = success_rate_wk)) +
     panel.grid = element_blank(),
     panel.background = element_blank()
   ) +
+  # nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .07, alpha = .8, data = teams_24 |> filter(team %in% teams_left)) +
   nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .07, alpha = .8) +
   stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se=FALSE, color='gray') +
-  nflplotR::geom_mean_lines(aes(x0 = adj_mean_epa_wk, y0 = success_rate_wk))
+  nflplotR::geom_mean_lines(aes(x0 = adj_mean_epa, y0 = success_rate))
 
 # ggsave("off-adj-performance.png", width = 16, height = 9, units = "cm")
 
@@ -997,12 +997,12 @@ ggplot(teams_24, aes(x = adj_mean_epa_wk, y = success_rate_wk)) +
 
 # Defensive Performance
 
-ggplot(teams_24, aes(x = adj_mean_epa_allowed_wk, y = success_rate_allowed_wk)) +
+ggplot(teams_24, aes(x = adj_mean_epa_allowed, y = success_rate_allowed)) +
   labs(x = 'EPA / Play Allowed',
        y = 'Success Rate Allowed',
-       title = "NFL Defensive Performances",
+       title = "NFL Defensive Performances (2024)",
        ### CHANGE!!!
-       subtitle = "thru wk13  |  efficiency adjusted for SOS",
+       subtitle = "regualr + postseason  |  efficiency adjusted for SOS",
        caption = 'By: Sam Burch  |  Data @nflfastR') +
   theme(
     plot.title = element_text(hjust = 0.5),
@@ -1013,9 +1013,10 @@ ggplot(teams_24, aes(x = adj_mean_epa_allowed_wk, y = success_rate_allowed_wk)) 
   ) +
   scale_x_reverse() +
   scale_y_reverse() +
+  # nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .07, alpha = .8, data = teams_24 |> filter(team %in% teams_left)) +
   nflplotR::geom_nfl_logos(aes(team_abbr = team), width = .07, alpha = .8) +
   stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se=FALSE, color='gray') +
-  nflplotR::geom_mean_lines(aes(x0 = adj_mean_epa_allowed_wk, y0 = success_rate_allowed_wk))
+  nflplotR::geom_mean_lines(aes(x0 = adj_mean_epa_allowed, y0 = success_rate_allowed))
 
 # ggsave("def-adj-performance.png", width = 16, height = 9, units = "cm")
 
